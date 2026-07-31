@@ -1,18 +1,33 @@
 /**
- * Campus Assessment & HR Management Platform Backend
+ * InCred Finance - Campus Assessment & HR Management Backend
+ * Dual-URL Architecture:
+ * - Student URL:  https://.../exec
+ * - HR Admin URL: https://.../exec?view=admin
  */
 
 const HR_ADMIN_KEY = "HR_ADMIN_2026";
-const CUTOFF_SCORE = 70; // Set test passing cutoff score
+const CUTOFF_SCORE = 70; // Benchmark cutoff score for test qualification
 
+/**
+ * Main Web App Handler — Dual URL Router
+ */
 function doGet(e) {
-  return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('InCred Finance - Campus Assessment Portal')
+  const viewMode = (e && e.parameter && e.parameter.view) ? e.parameter.view.toLowerCase() : 'student';
+  
+  const template = HtmlService.createTemplateFromFile('Index');
+  template.viewMode = viewMode;
+  
+  const pageTitle = (viewMode === 'admin') 
+    ? 'InCred Finance - HR Admin Portal' 
+    : 'InCred Finance - Campus Aptitude Test';
+    
+  return template.evaluate()
+    .setTitle(pageTitle)
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
 /**
- * Initialize or get the Candidates Sheet
+ * Initialize or Fetch Spreadsheet Database Sheet
  */
 function getOrCreateSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -24,52 +39,53 @@ function getOrCreateSheet() {
       "Override Status", "Stage 1 Status", "Stage 1 Feedback", 
       "Stage 2 Status", "Stage 2 Feedback", "Stage 3 Status", "Stage 3 Feedback"
     ]);
+    sheet.getRange("1:1").setFontWeight("bold").setBackground("#f1f5f9");
   }
   return sheet;
 }
 
 /**
- * Register Student & Save Test Result
+ * Submit Student Test Results
  */
 function submitStudentTest(name, rollNumber, score) {
   const sheet = getOrCreateSheet();
   const data = sheet.getDataRange().getValues();
   
-  // Check if roll number already exists
+  // Prevent duplicate submissions by Roll Number
   for (let i = 1; i < data.length; i++) {
-    if (data[i][2].toString() === rollNumber.toString()) {
-      return { success: false, message: "Roll Number already registered/submitted." };
+    if (data[i][2].toString().trim() === rollNumber.toString().trim()) {
+      return { success: false, message: "This Roll Number has already completed the assessment." };
     }
   }
 
   const id = new Date().getTime().toString();
-  const autoEligible = score >= CUTOFF_SCORE;
+  const autoEligible = Number(score) >= CUTOFF_SCORE;
   const initialStage1Status = autoEligible ? "Shortlisted for 1st Round PI" : "Rejected in Test Round";
 
   sheet.appendRow([
     id,
-    name,
-    rollNumber,
+    name.trim(),
+    rollNumber.trim(),
     score,
     autoEligible,
-    "AUTO",                  // Override status default
-    initialStage1Status,      // Stage 1 Status
-    "Completed Online Test",  // Stage 1 Feedback
-    "",                       // Stage 2 Status
-    "",                       // Stage 2 Feedback
-    "",                       // Stage 3 Status
-    ""                        // Stage 3 Feedback
+    "AUTO",                    // Override status default
+    initialStage1Status,        // Stage 1 Status
+    "Completed Online Test",    // Stage 1 Feedback
+    "",                         // Stage 2 Status
+    "",                         // Stage 2 Feedback
+    "",                         // Stage 3 Status
+    ""                          // Stage 3 Feedback
   ]);
 
   return { success: true, score: score, passed: autoEligible };
 }
 
 /**
- * Fetch all candidate records for HR Admin
+ * Fetch Candidates Database for HR Admin Dashboard
  */
 function getCandidateDataForAdmin(adminKey) {
   if (adminKey !== HR_ADMIN_KEY) {
-    throw new Error("Unauthorized HR Passkey.");
+    throw new Error("Unauthorized access. Invalid HR Passkey.");
   }
 
   const sheet = getOrCreateSheet();
@@ -97,11 +113,11 @@ function getCandidateDataForAdmin(adminKey) {
 }
 
 /**
- * Update candidate stage details by HR
+ * Update Stage Details & Manual Override by HR Admin
  */
 function updateCandidateByAdmin(adminKey, candidateId, stage, status, feedback, override) {
   if (adminKey !== HR_ADMIN_KEY) {
-    throw new Error("Unauthorized.");
+    throw new Error("Unauthorized action.");
   }
 
   const sheet = getOrCreateSheet();
@@ -125,5 +141,54 @@ function updateCandidateByAdmin(adminKey, candidateId, stage, status, feedback, 
       return { success: true };
     }
   }
-  return { success: false, message: "Candidate not found." };
+  return { success: false, message: "Candidate record not found." };
+}
+
+/**
+ * Generate Excel-Compatible CSV Content for Stage Reports
+ */
+function exportStageReport(adminKey, stage) {
+  if (adminKey !== HR_ADMIN_KEY) {
+    throw new Error("Unauthorized export access.");
+  }
+
+  const sheet = getOrCreateSheet();
+  const data = sheet.getDataRange().getValues();
+  
+  let csv = "Name,Roll Number,Feedback,Status\n";
+
+  for (let i = 1; i < data.length; i++) {
+    let row = data[i];
+    let name = `"${row[1]}"`;
+    let roll = `"${row[2]}"`;
+    let autoEligible = row[4];
+    let override = row[5];
+    let include = false;
+    let feedback = "";
+    let status = "";
+
+    if (stage === 'TEST') {
+      include = true;
+      feedback = `"${row[7] || ''}"`;
+      status = `"${row[6] || ''}"`;
+    } else if (stage === 'ROUND1') {
+      let qualified = (override === 'INCLUDE') || (autoEligible && override !== 'EXCLUDE');
+      if (qualified) {
+        include = true;
+        feedback = `"${row[9] || ''}"`;
+        status = `"${row[8] || ''}"`;
+      }
+    } else if (stage === 'ROUND2') {
+      if (row[8] === 'Shortlisted for 2nd Round PI') {
+        include = true;
+        feedback = `"${row[11] || ''}"`;
+        status = `"${row[10] || ''}"`;
+      }
+    }
+
+    if (include) {
+      csv += `${name},${roll},${feedback},${status}\n`;
+    }
+  }
+  return csv;
 }
