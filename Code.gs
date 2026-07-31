@@ -1,39 +1,81 @@
 /**
- * Campus Recruitment & Assessment Platform Backend
- * Google Apps Script Backend Module
+ * Campus Assessment & HR Management Platform Backend
  */
+
+const HR_ADMIN_KEY = "HR_ADMIN_2026";
+const CUTOFF_SCORE = 70; // Set test passing cutoff score
 
 function doGet(e) {
   return HtmlService.createHtmlOutputFromFile('Index')
-    .setTitle('Campus Recruitment & Assessment Platform')
+    .setTitle('InCred Finance - Campus Assessment Portal')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
-// Admin Passkey Configuration
-const HR_ADMIN_KEY = "HR_ADMIN_2026";
-
 /**
- * Validates HR Passkey
+ * Initialize or get the Candidates Sheet
  */
-function verifyHRAdmin(passkey) {
-  return passkey === HR_ADMIN_KEY;
+function getOrCreateSheet() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName("Candidates");
+  if (!sheet) {
+    sheet = ss.insertSheet("Candidates");
+    sheet.appendRow([
+      "ID", "Name", "Roll Number", "Score", "Auto Eligible", 
+      "Override Status", "Stage 1 Status", "Stage 1 Feedback", 
+      "Stage 2 Status", "Stage 2 Feedback", "Stage 3 Status", "Stage 3 Feedback"
+    ]);
+  }
+  return sheet;
 }
 
 /**
- * Fetch all candidate records across evaluation stages
+ * Register Student & Save Test Result
  */
-function getCandidateData(adminKey) {
-  if (!verifyHRAdmin(adminKey)) {
-    throw new Error("Unauthorized access. Invalid HR Passkey.");
-  }
-  
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Candidates");
-  if (!sheet) return [];
-  
+function submitStudentTest(name, rollNumber, score) {
+  const sheet = getOrCreateSheet();
   const data = sheet.getDataRange().getValues();
-  const headers = data[0];
-  const candidates = [];
   
+  // Check if roll number already exists
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][2].toString() === rollNumber.toString()) {
+      return { success: false, message: "Roll Number already registered/submitted." };
+    }
+  }
+
+  const id = new Date().getTime().toString();
+  const autoEligible = score >= CUTOFF_SCORE;
+  const initialStage1Status = autoEligible ? "Shortlisted for 1st Round PI" : "Rejected in Test Round";
+
+  sheet.appendRow([
+    id,
+    name,
+    rollNumber,
+    score,
+    autoEligible,
+    "AUTO",                  // Override status default
+    initialStage1Status,      // Stage 1 Status
+    "Completed Online Test",  // Stage 1 Feedback
+    "",                       // Stage 2 Status
+    "",                       // Stage 2 Feedback
+    "",                       // Stage 3 Status
+    ""                        // Stage 3 Feedback
+  ]);
+
+  return { success: true, score: score, passed: autoEligible };
+}
+
+/**
+ * Fetch all candidate records for HR Admin
+ */
+function getCandidateDataForAdmin(adminKey) {
+  if (adminKey !== HR_ADMIN_KEY) {
+    throw new Error("Unauthorized HR Passkey.");
+  }
+
+  const sheet = getOrCreateSheet();
+  const data = sheet.getDataRange().getValues();
+  const candidates = [];
+
   for (let i = 1; i < data.length; i++) {
     let row = data[i];
     candidates.push({
@@ -41,30 +83,30 @@ function getCandidateData(adminKey) {
       name: row[1],
       rollNumber: row[2],
       score: row[3],
-      autoEligible: row[4],       // true/false based on cutoff
-      overrideStatus: row[5],     // 'INCLUDE', 'EXCLUDE', or 'AUTO'
-      stage1Status: row[6],       // 'Shortlisted for 1st Round PI', 'Rejected in Test Round'
-      stage1Feedback: row[7],
-      stage2Status: row[8],       // 'Shortlisted for 2nd Round PI', 'Rejected in 1st Round PI'
-      stage2Feedback: row[9],
-      stage3Status: row[10],      // 'Selected in Final Process', 'Rejected in 2nd Round PI', 'Not Selected in Final Process'
-      stage3Feedback: row[11]
+      autoEligible: row[4],
+      overrideStatus: row[5] || 'AUTO',
+      stage1Status: row[6] || '',
+      stage1Feedback: row[7] || '',
+      stage2Status: row[8] || '',
+      stage2Feedback: row[9] || '',
+      stage3Status: row[10] || '',
+      stage3Feedback: row[11] || ''
     });
   }
   return candidates;
 }
 
 /**
- * Update candidate feedback, status, and manual override
+ * Update candidate stage details by HR
  */
-function updateCandidateStage(adminKey, candidateId, stage, status, feedback, override) {
-  if (!verifyHRAdmin(adminKey)) {
-    throw new Error("Unauthorized access.");
+function updateCandidateByAdmin(adminKey, candidateId, stage, status, feedback, override) {
+  if (adminKey !== HR_ADMIN_KEY) {
+    throw new Error("Unauthorized.");
   }
-  
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Candidates");
+
+  const sheet = getOrCreateSheet();
   const data = sheet.getDataRange().getValues();
-  
+
   for (let i = 1; i < data.length; i++) {
     if (data[i][0].toString() === candidateId.toString()) {
       let rowNum = i + 1;
@@ -83,56 +125,5 @@ function updateCandidateStage(adminKey, candidateId, stage, status, feedback, ov
       return { success: true };
     }
   }
-  return { success: false, message: "Candidate ID not found." };
-}
-
-/**
- * Download Stage Data as Excel-Compatible CSV Format
- * Returns CSV string with columns: Name, Roll Number, Feedback, Status
- */
-function exportStageToExcelCSV(adminKey, stage) {
-  if (!verifyHRAdmin(adminKey)) {
-    throw new Error("Unauthorized access.");
-  }
-  
-  const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("Candidates");
-  const data = sheet.getDataRange().getValues();
-  
-  let csvContent = "Name,Roll Number,Feedback,Status\n";
-  
-  for (let i = 1; i < data.length; i++) {
-    let row = data[i];
-    let name = `"${row[1]}"`;
-    let roll = `"${row[2]}"`;
-    let feedback = "";
-    let status = "";
-    let includeRow = false;
-    
-    if (stage === 'TEST') {
-      includeRow = true;
-      feedback = `"${row[7] || ''}"`;
-      status = `"${row[6] || ''}"`;
-    } else if (stage === 'ROUND1') {
-      // Include candidates who passed Test stage or were manually Included
-      let isIncluded = row[5] === 'INCLUDE' || (row[4] === true && row[5] !== 'EXCLUDE');
-      if (isIncluded) {
-        includeRow = true;
-        feedback = `"${row[9] || ''}"`;
-        status = `"${row[8] || ''}"`;
-      }
-    } else if (stage === 'ROUND2') {
-      // Include candidates shortlisted for Round 2
-      if (row[8] === 'Shortlisted for 2nd Round PI') {
-        includeRow = true;
-        feedback = `"${row[11] || ''}"`;
-        status = `"${row[10] || ''}"`;
-      }
-    }
-    
-    if (includeRow) {
-      csvContent += `${name},${roll},${feedback},${status}\n`;
-    }
-  }
-  
-  return csvContent;
+  return { success: false, message: "Candidate not found." };
 }
